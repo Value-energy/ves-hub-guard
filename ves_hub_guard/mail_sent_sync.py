@@ -137,8 +137,15 @@ def _save_retry(name, validity, retry):
 def _file_message(acc, raw):
     msg = email.message_from_bytes(raw)
     message_id = (msg.get("Message-ID") or "").strip().strip("<>")
-    if message_id and frappe.db.exists("Communication", {"message_id": message_id}):
-        return  # already in the ERP (sent from the Hub, or synced before)
+    if message_id:
+        existing = frappe.db.get_value(
+            "Communication", {"message_id": message_id},
+            ["name", "sent_or_received", "sender", "email_account"], as_dict=True,
+        )
+        if existing:
+            # Already in the ERP (sent from the Hub, synced before, or brought in by the Inbox fetch).
+            _fix_own_copy(acc, existing)
+            return
 
     from_name, from_addr = parseaddr(_h(msg.get("From")))
     subject = _h(msg.get("Subject")) or "(no subject)"
@@ -184,6 +191,20 @@ def _file_message(acc, raw):
             "attached_to_doctype": "Communication",
             "attached_to_name": comm.name,
         }).insert(ignore_permissions=True)
+
+
+def _fix_own_copy(acc, comm):
+    """A reply you send can also land in your own Inbox (e.g. Bcc to yourself). ERPNext's Inbox fetch then
+    files it as Received, from you. Found here in the Sent folder, it is a sent email: file it as Sent so it
+    shows in Hub Mail > Sent and leaves the Inbox."""
+    if (
+        comm.sent_or_received == "Received"
+        and comm.email_account == acc.name
+        and (comm.sender or "").strip().lower() == (acc.email_id or "").strip().lower()
+    ):
+        frappe.db.set_value(
+            "Communication", comm.name, {"sent_or_received": "Sent", "seen": 1}, update_modified=False
+        )
 
 
 def _parent(msg):
