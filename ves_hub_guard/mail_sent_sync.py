@@ -24,7 +24,11 @@ SENT_FOLDER_GUESSES = ("Sent", "INBOX.Sent", "Sent Items", "INBOX.Sent Items", "
 LOOKBACK_DAYS = 3
 MAX_PER_RUN = 200
 MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024
-STATE_KEY = "ves_sent_sync::{0}"
+MAX_ATTEMPTS = 5
+# v2 (1.1.1): new keys so every mailbox re-reads the last LOOKBACK_DAYS once - messages that 1.1.0
+# could not file (time-zone bug) are picked up; ones already in the ERP are skipped by Message-ID.
+STATE_KEY = "ves_sent_sync_v2::{0}"  # "<uidvalidity>:<last uid read>"
+RETRY_KEY = "ves_sent_sync_v2_retry::{0}"  # "<uidvalidity>|<uid>:<attempts>,<uid>:<attempts>"
 
 
 def sync_all():
@@ -68,16 +72,23 @@ def sync_account(name):
         if first_run and not uids and uidnext:
             last_uid = uidnext - 1  # nothing recent: start from the next message sent
 
+        # Messages that failed on an earlier run are tried again (up to MAX_ATTEMPTS times).
+        retry = _load_retry(name, validity)
+        for uid in sorted(retry):
+            if _process_uid(conn, acc, uid):
+                retry.pop(uid, None)
+            else:
+                retry[uid] = retry[uid] + 1
+                if retry[uid] >= MAX_ATTEMPTS:
+                    frappe.log_error(title="VES Sent-folder sync: gave up on message {0} in {1}".format(uid, name))
+                    retry.pop(uid, None)
+
         for uid in uids:
-            typ, msg_data = conn.uid("fetch", str(uid), "(BODY.PEEK[])")
-            raw = _raw_from_fetch(msg_data) if typ == "OK" else None
-            if raw:
-                try:
-                    _file_message(acc, raw)
-                except Exception:
-                    frappe.log_error(title="VES Sent-folder sync: message {0} in {1}".format(uid, name))
+            if not _process_uid(conn, acc, uid):
+                retry[uid] = 1
             last_uid = uid
 
+        _save_retry(name, validity, retry)
         if uids or first_run:
             frappe.db.set_default(STATE_KEY.format(name), "{0}:{1}".format(validity, last_uid))
     finally:
@@ -85,6 +96,40 @@ def sync_account(name):
             conn.logout()
         except Exception:
             pass
+
+
+def _process_uid(conn, acc, uid):
+    """Fetch and file one message. True when it is filed (or there is nothing to file)."""
+    typ, msg_data = conn.uid("fetch", str(uid), "(BODY.PEEK[])")
+    raw = _raw_from_fetch(msg_data) if typ == "OK" else None
+    if not raw:
+        return True  # deleted from the Sent folder meanwhile: nothing to file
+    frappe.db.savepoint("ves_sent_msg")
+    try:
+        _file_message(acc, raw)
+        return True
+    except Exception:
+        frappe.db.rollback(save_point="ves_sent_msg")
+        frappe.log_error(title="VES Sent-folder sync: message {0} in {1}".format(uid, acc.name))
+        return False
+
+
+def _load_retry(name, validity):
+    raw = frappe.db.get_default(RETRY_KEY.format(name)) or ""
+    head, _, body = raw.partition("|")
+    if head != validity:
+        return {}
+    out = {}
+    for part in body.split(","):
+        uid, _, n = part.partition(":")
+        if uid.isdigit():
+            out[int(uid)] = cint(n) or 1
+    return out
+
+
+def _save_retry(name, validity, retry):
+    body = ",".join("{0}:{1}".format(u, n) for u, n in sorted(retry.items()))
+    frappe.db.set_default(RETRY_KEY.format(name), "{0}|{1}".format(validity, body) if body else "")
 
 
 # ---------- one message ----------
@@ -258,6 +303,7 @@ def _date(value):
         d = parsedate_to_datetime(value)
         if d.tzinfo:
             d = convert_utc_to_system_timezone(d.astimezone(timezone.utc).replace(tzinfo=None))
-        return d
+        # Frappe returns an aware datetime ("...+03:00"); the database column takes a plain one.
+        return d.replace(tzinfo=None) if getattr(d, "tzinfo", None) else d
     except Exception:
         return now_datetime()
