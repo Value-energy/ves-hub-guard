@@ -9,3 +9,11 @@ required_apps = ["frappe"]
 
 # Staff who open any Desk address are sent to the Hub before Desk loads (see guard.py).
 before_request = ["ves_hub_guard.guard.before_request"]
+
+# Emails sent from Outlook (or any mail app) are read from each mailbox's Sent folder
+# and shown in Hub Mail > Sent (see mail_sent_sync.py).
+scheduler_events = {
+    "cron": {
+        "*/5 * * * *": ["ves_hub_guard.mail_sent_sync.sync_all"],
+    },
+}
