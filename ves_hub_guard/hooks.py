@@ -14,6 +14,10 @@ before_request = ["ves_hub_guard.guard.before_request"]
 # and shown in Hub Mail > Sent (see mail_sent_sync.py).
 scheduler_events = {
     "cron": {
-        "*/5 * * * *": ["ves_hub_guard.mail_sent_sync.sync_all"],
+        "*/5 * * * *": [
+            "ves_hub_guard.mail_sent_sync.sync_all",
+            # Support tickets / notifications that ERPNext skips as auto-generated (see mail_auto_generated.py).
+            "ves_hub_guard.mail_auto_generated.import_all",
+        ],
     },
 }
