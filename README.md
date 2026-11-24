@@ -38,3 +38,17 @@ ERPNext skips every incoming email marked `Auto-Submitted: auto-generated` (supp
 GitHub Support, many system notifications) and keeps it as an *Unhandled Email*. Every 5 minutes
 `mail_auto_generated.import_all` files those (last 30 days) as Received emails on their mailbox, once each
 (matched by Message-ID; the Unhandled Email is marked as filed). No auto-reply is ever sent for them.
+
+## Hub Mail drafts in Outlook
+
+Hub Mail saves an email that is being written as a **VE Mail Draft** (Drafts folder in Hub Mail). Every minute
+`mail_drafts.push_all` copies each new or changed draft to the mailbox's **Drafts** folder on the mail server, with its
+attachments, so Outlook, webmail and phones show it too.
+
+- A draft is copied once it has been left alone for 20 seconds; the copy it replaces is removed.
+- When the email is sent or the draft is deleted in the Hub, its copy is removed from the server's Drafts folder.
+- One way only (Hub -> mail server): a draft changed or sent from Outlook is not read back into the Hub.
+- Only messages this job created (header `X-VES-Draft`) are ever removed from the folder.
+- A mailbox that cannot be reached is tried again each minute, up to 8 times; after that the draft stays in the Hub
+  only and the Error Log has "VES drafts copy: gave up on ...".
+- The **VE Mail Draft** DocType is created on the site (custom DocType); without it the job does nothing.
